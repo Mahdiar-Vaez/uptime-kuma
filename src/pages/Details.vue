@@ -138,6 +138,10 @@
                         <font-awesome-icon icon="clone" />
                         {{ $t("Clone") }}
                     </router-link>
+                    <button class="btn btn-normal" @click="downloadPdfReport">
+                        <font-awesome-icon icon="file-pdf" />
+                        PDF
+                    </button>
                     <button class="btn btn-normal text-danger" @click="deleteDialog">
                         <font-awesome-icon icon="trash" />
                         {{ $t("Delete") }}
@@ -692,6 +696,35 @@ export default {
          */
         showScreenshotDialog() {
             this.$refs.screenshotDialog.show();
+        },
+
+        /**
+         * Download the current monitor as a PDF report
+         * @returns {Promise<void>}
+         */
+        async downloadPdfReport() {
+            if (!this.monitor) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/monitor/${this.monitor.id}/report`);
+                if (!response.ok) {
+                    throw new Error("Unable to generate PDF report.");
+                }
+
+                const blob = await response.blob();
+                const href = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = href;
+                link.download = `monitor-report-${this.monitor.id}.pdf`;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(href);
+            } catch (error) {
+                toast.error(error.message);
+            }
         },
 
         /**

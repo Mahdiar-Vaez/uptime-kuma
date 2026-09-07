@@ -18,6 +18,7 @@ const { Prometheus } = require("../prometheus");
 const Database = require("../database");
 const { UptimeCalculator } = require("../uptime-calculator");
 const { Settings } = require("../settings");
+const { generateMonitorReportPdf } = require("../reporting");
 
 let router = express.Router();
 
@@ -42,6 +43,58 @@ router.get("/api/entry-page", async (request, response) => {
         result.entryPage = server.entryPage;
     }
     response.json(result);
+});
+
+router.get("/api/monitor/:id/report", async (request, response) => {
+    try {
+        const monitorID = parseInt(request.params.id, 10);
+        if (Number.isNaN(monitorID)) {
+            throw new Error("Invalid monitor ID");
+        }
+
+        const monitor = await R.findOne("monitor", "id = ?", [monitorID]);
+        if (!monitor) {
+            response.status(404).json({ ok: false, msg: "Monitor not found." });
+            return;
+        }
+
+        const heartbeat = await Monitor.getPreviousHeartbeat(monitorID);
+        const uptimeCalculator = await UptimeCalculator.getUptimeCalculator(monitorID);
+        const uptime24Data = uptimeCalculator.getDataByDuration("24h");
+        const uptime30dData = uptimeCalculator.getDataByDuration("30d");
+        const uptime1yData = uptimeCalculator.getDataByDuration("1y");
+
+        const tlsInfoBean = await R.findOne("monitor_tls_info", "monitor_id = ?", [monitorID]);
+        const tlsInfo = tlsInfoBean ? JSON.parse(tlsInfoBean.info_json) : null;
+        const importantEvents = await R.find(
+            "heartbeat",
+            "monitor_id = ? AND important = 1 ORDER BY time DESC LIMIT 10",
+            [monitorID]
+        );
+
+        const report = {
+            id: monitor.id,
+            name: monitor.name,
+            type: monitor.type,
+            url: monitor.url,
+            interval: monitor.interval,
+            status: heartbeat?.status ?? -1,
+            uptime24: Number(((uptime24Data.uptime ?? 0) * 100).toFixed(2)),
+            uptime30d: Number(((uptime30dData.uptime ?? 0) * 100).toFixed(2)),
+            uptime1y: Number(((uptime1yData.uptime ?? 0) * 100).toFixed(2)),
+            avgPing: Number(uptime24Data.avgPing ?? 0),
+            tlsInfo,
+            events: importantEvents,
+        };
+
+        const pdfBuffer = await generateMonitorReportPdf(report);
+
+        response.setHeader("Content-Type", "application/pdf");
+        response.setHeader("Content-Disposition", `attachment; filename="monitor-report-${monitorID}.pdf"`);
+        response.send(pdfBuffer);
+    } catch (error) {
+        sendHttpError(response, error.message);
+    }
 });
 
 router.all("/api/push/:pushToken", async (request, response) => {
