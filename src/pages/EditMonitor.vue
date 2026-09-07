@@ -66,6 +66,9 @@
                                         <option value="group">
                                             {{ $t("Group") }}
                                         </option>
+                                        <option value="chain">
+                                            Chain
+                                        </option>
                                     </optgroup>
 
                                     <optgroup :label="$t('Passive Monitor Type')">
@@ -1538,6 +1541,48 @@
                                 :condition-variables="conditionVariables"
                                 class="my-3"
                             />
+
+                            <!-- Chain Monitor -->
+                            <div v-if="monitor.type === 'chain'" class="my-3">
+                                <label for="chain-mode" class="form-label">Chain Logic</label>
+                                <select id="chain-mode" v-model="chainConfig.mode" class="form-select">
+                                    <option value="AND">AND — all stages must be operational</option>
+                                    <option value="OR">OR — at least one stage must be operational</option>
+                                    <option value="NOT">NOT — inverse condition</option>
+                                    <option value="SEQUENTIAL">SEQUENTIAL — run in order</option>
+                                </select>
+
+                                <div class="mt-3">
+                                    <label for="chain-stages" class="form-label">Workflow Stages</label>
+                                    <VueMultiselect
+                                        id="chain-stages"
+                                        v-model="chainConfig.stages"
+                                        :options="chainStageOptions"
+                                        :multiple="true"
+                                        :close-on-select="false"
+                                        :preserve-search="true"
+                                        :placeholder="'Select stages for this workflow...'"
+                                        label="label"
+                                        track-by="id"
+                                    ></VueMultiselect>
+                                    <div class="form-text">
+                                        Select the monitors that represent the chain steps. The selected order is used for
+                                        sequential flow and reporting.
+                                    </div>
+                                </div>
+
+                                <div class="form-check mt-3">
+                                    <input
+                                        id="chain-continue-on-failure"
+                                        v-model="chainConfig.continueOnFailure"
+                                        class="form-check-input"
+                                        type="checkbox"
+                                    />
+                                    <label class="form-check-label" for="chain-continue-on-failure">
+                                        Continue the workflow even if a stage fails
+                                    </label>
+                                </div>
+                            </div>
 
                             <!-- Interval -->
                             <div class="my-3">
@@ -3385,6 +3430,11 @@ export default {
             pm2ProcessOptions: [],
             pm2ProcessLoading: false,
             pm2ProcessError: "",
+            chainConfig: {
+                mode: "AND",
+                stages: [],
+                continueOnFailure: false,
+            },
         };
     },
 
@@ -3666,6 +3716,20 @@ message HealthCheckResponse {
         conditionVariables() {
             return this.$root.monitorTypeList[this.monitor.type]?.conditionVariables || [];
         },
+
+        chainStageOptions() {
+            if (!this.$root.monitorList) {
+                return [];
+            }
+
+            return Object.values(this.$root.monitorList)
+                .filter((monitor) => monitor && monitor.id !== this.monitor.id)
+                .map((monitor) => ({
+                    id: monitor.id,
+                    name: monitor.name || `#${monitor.id}`,
+                    label: `${monitor.pathName || monitor.name || `#${monitor.id}`}`,
+                }));
+        },
     },
     watch: {
         "$root.proxyList"() {
@@ -3677,6 +3741,25 @@ message HealthCheckResponse {
                         this.monitor.proxyId = proxy.id;
                     }
                 }
+            }
+        },
+
+        chainConfig: {
+            deep: true,
+            handler(value) {
+                if (this.monitor.type === "chain") {
+                    this.monitor.conditions = {
+                        mode: value?.mode || "AND",
+                        stages: Array.isArray(value?.stages) ? value.stages : [],
+                        continueOnFailure: Boolean(value?.continueOnFailure),
+                    };
+                }
+            },
+        },
+
+        "monitor.conditions"(value) {
+            if (this.monitor.type === "chain") {
+                this.chainConfig = this.normalizeChainConfig(value);
             }
         },
 
@@ -3871,9 +3954,18 @@ message HealthCheckResponse {
                 }
             }
 
+            if (newType === "chain") {
+                this.chainConfig = this.normalizeChainConfig(this.monitor.conditions);
+                this.monitor.conditions = {
+                    ...this.chainConfig,
+                };
+            }
+
             // Reset conditions since condition variables likely change:
             if (oldType && newType !== oldType) {
-                this.monitor.conditions = [];
+                if (newType !== "chain" && oldType !== "chain") {
+                    this.monitor.conditions = [];
+                }
             }
         },
 
@@ -3983,6 +4075,38 @@ message HealthCheckResponse {
         this.kafkaSaslMechanismOptions = kafkaSaslMechanismOptions;
     },
     methods: {
+        normalizeChainConfig(config) {
+            if (!config || typeof config === "string") {
+                let parsed = {};
+
+                try {
+                    parsed = JSON.parse(config || "{}") || {};
+                } catch (e) {
+                    parsed = {};
+                }
+
+                return {
+                    mode: parsed.mode || parsed.logic || "AND",
+                    stages: Array.isArray(parsed.stages) ? parsed.stages : [],
+                    continueOnFailure: Boolean(parsed.continueOnFailure),
+                };
+            }
+
+            if (typeof config === "object") {
+                return {
+                    mode: config.mode || config.logic || "AND",
+                    stages: Array.isArray(config.stages) ? config.stages : [],
+                    continueOnFailure: Boolean(config.continueOnFailure),
+                };
+            }
+
+            return {
+                mode: "AND",
+                stages: [],
+                continueOnFailure: false,
+            };
+        },
+
         loadPM2ProcessList() {
             this.pm2ProcessLoading = true;
             this.pm2ProcessError = "";
@@ -4091,6 +4215,13 @@ message HealthCheckResponse {
                             } else {
                                 this.monitor.responsecheck = null;
                             }
+                        }
+
+                        if (this.monitor.type === "chain") {
+                            this.chainConfig = this.normalizeChainConfig(this.monitor.conditions);
+                            this.monitor.conditions = {
+                                ...this.chainConfig,
+                            };
                         }
 
                         // Handling for monitors that are created before 1.7.0
